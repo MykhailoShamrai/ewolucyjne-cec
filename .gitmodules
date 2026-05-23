@@ -1,0 +1,3 @@
+[submodule "cecxx"]
+	path = cecxx
+	url = https://codeberg.org/ewarchul/cecxx.git
