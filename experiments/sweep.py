@@ -94,6 +94,33 @@ def build_jobs(configs, dims, seeds, functions, grid_override=None):
     return jobs
 
 
+def _fmt(secs):
+    """Human-readable duration: '1h05m', '7m12s' or '9s'."""
+    secs = int(secs)
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{s:02d}s"
+    return f"{s}s"
+
+
+def _stage_plan(jobs):
+    """Ordered list of stages (= configs) with their job counts.
+
+    Jobs are built config-first, so each config is a contiguous, sequential
+    block in `jobs` -- a natural "etap" that completes before the next starts.
+    """
+    order, totals = [], {}
+    for config_name, *_ in jobs:
+        if config_name not in totals:
+            order.append(config_name)
+            totals[config_name] = 0
+        totals[config_name] += 1
+    return order, totals
+
+
 def main():
     ap = argparse.ArgumentParser(description="MSR/PSR hyperparameter sweep")
     ap.add_argument("--out", default="results/sweep.csv")
@@ -102,6 +129,8 @@ def main():
     ap.add_argument("--workers", type=int, default=os.cpu_count())
     ap.add_argument("--configs", nargs="+", default=list(CONFIGS))
     ap.add_argument("--quick", action="store_true", help="tiny smoke run")
+    ap.add_argument("--log-every", type=int, default=1,
+                    help="print one progress line every N finished runs (1 = every run)")
     args = ap.parse_args()
 
     seeds = list(range(1, args.seeds + 1))
@@ -115,26 +144,64 @@ def main():
 
     jobs = build_jobs(args.configs, args.dims, seeds, functions, grid_override)
     total = len(jobs)
-    print(f"{total} runs | dims={args.dims} seeds={seeds[0]}..{seeds[-1]} "
-          f"workers={args.workers}", flush=True)
+    stage_order, stage_total = _stage_plan(jobs)
+
+    print(f"{total} runs | {len(stage_order)} stages | dims={args.dims} "
+          f"seeds={seeds[0]}..{seeds[-1]} workers={args.workers}", flush=True)
+    print("stages: " + "  ".join(f"{s}({stage_total[s]})" for s in stage_order),
+          flush=True)
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     start = time.perf_counter()
+    stage_done = {s: 0 for s in stage_order}      # finished runs per stage
+    stage_cpu = {s: 0.0 for s in stage_order}     # summed per-run wall time
+    stage_started_at = {}                         # wall-clock of stage's 1st result
+    done = 0
     with open(args.out, "w", newline="") as fh, \
             ProcessPoolExecutor(max_workers=args.workers) as pool:
         writer = csv.DictWriter(fh, fieldnames=FIELDS)
         writer.writeheader()
-        done = 0
-        for row in pool.map(run_job, jobs, chunksize=4):
+        log_every = max(1, args.log_every)
+        # pool.map preserves job order, so results arrive stage-by-stage.
+        for job, row in zip(jobs, pool.map(run_job, jobs, chunksize=4)):
             writer.writerow(row)
             fh.flush()
             done += 1
-            if done % 100 == 0 or done == total:
-                elapsed = time.perf_counter() - start
-                eta = elapsed / done * (total - done)
-                print(f"  {done}/{total} | elapsed {elapsed / 60:.1f}m | "
-                      f"ETA {eta / 3600:.1f}h", flush=True)
-    print(f"wrote {args.out}", flush=True)
+
+            stage = job[0]
+            stage_started_at.setdefault(stage, time.perf_counter())
+            stage_done[stage] += 1
+            stage_cpu[stage] += row["seconds"]
+
+            elapsed = time.perf_counter() - start
+            eta = elapsed / done * (total - done)
+
+            stage_complete = stage_done[stage] == stage_total[stage]
+            if done % log_every == 0 or done == total or stage_complete:
+                flag = "OK " if row["solved"] else "    "
+                print(f"[{done}/{total} {100 * done / total:4.0f}%] {flag}"
+                      f"{stage} f{row['func_id']:02d} D{row['dim']} s{row['seed']} "
+                      f"{row['hp_name']}={row['hp_value']:+.2f} | "
+                      f"err={row['error']:.2e} {row['seconds']:.1f}s | "
+                      f"{_fmt(elapsed)} elapsed, ETA {_fmt(eta)}", flush=True)
+
+            if stage_complete:
+                wall = time.perf_counter() - stage_started_at[stage]
+                finished = sum(1 for s in stage_order
+                               if stage_done[s] == stage_total[s])
+                remaining = [s for s in stage_order
+                             if stage_done[s] < stage_total[s]]
+                print(f"✓ stage done: {stage} | {stage_total[stage]} runs | "
+                      f"{_fmt(wall)} wall, {_fmt(stage_cpu[stage])} CPU | "
+                      f"{finished}/{len(stage_order)} stages | ETA {_fmt(eta)}",
+                      flush=True)
+                if remaining:
+                    print(f"    remaining stages: {', '.join(remaining)}", flush=True)
+
+    total_elapsed = time.perf_counter() - start
+    print(f"done in {_fmt(total_elapsed)} | wrote {args.out}", flush=True)
+    for s in stage_order:
+        print(f"  {s}: {stage_total[s]} runs, {_fmt(stage_cpu[s])} CPU", flush=True)
 
 
 if __name__ == "__main__":
