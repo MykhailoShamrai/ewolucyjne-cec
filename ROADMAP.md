@@ -66,6 +66,8 @@
 
 ## Etap 2: DE-MSR (Median Success Rule)
 
+
+### TU JEST BLAD TRZA POPRAWIC
 ### 2.1 Zrozumienie MSR
 - Źródło: Kern et al. / Beyer & Sendhoff — MSR w kontekście strategii ewolucyjnych
 - Zasada: po każdej generacji liczymy odsetek potomków lepszych od mediany fitness rodziców
