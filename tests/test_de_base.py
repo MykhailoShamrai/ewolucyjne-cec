@@ -26,7 +26,7 @@ def _make_de(func, **overrides) -> DEBase:
 class TestConvergence:
     def test_sphere_converges_close_to_zero(self):
         result = _make_de(sphere).run()
-        assert result.best_f < 1e-3
+        assert result.best_fitness < 1e-3
 
     def test_sphere_best_x_near_origin(self):
         result = _make_de(sphere).run()
@@ -37,14 +37,14 @@ class TestDeterminism:
     def test_same_seed_same_result(self):
         r1 = _make_de(sphere, seed=123).run()
         r2 = _make_de(sphere, seed=123).run()
-        assert r1.best_f == r2.best_f
+        assert r1.best_fitness == r2.best_fitness
         np.testing.assert_array_equal(r1.best_x, r2.best_x)
-        assert r1.history_best_factor == r2.history_best_factor
+        assert r1.history_best_fitness == r2.history_best_fitness
 
     def test_different_seeds_differ(self):
         r1 = _make_de(sphere, seed=1, max_evals=1_000).run()
         r2 = _make_de(sphere, seed=2, max_evals=1_000).run()
-        assert r1.best_f != r2.best_f
+        assert r1.best_fitness != r2.best_fitness
 
 
 class TestInvariants:
@@ -61,21 +61,29 @@ class TestInvariants:
         assert np.all(result.best_x >= -5.0)
         assert np.all(result.best_x <= 5.0)
 
-    def test_best_f_matches_function_value(self):
+    def test_best_fitness_matches_function_value(self):
         result = _make_de(sphere).run()
-        assert result.best_f == pytest.approx(sphere(result.best_x))
+        assert result.best_fitness == pytest.approx(sphere(result.best_x))
 
-    def test_best_f_monotonic_non_increasing(self):
+    def test_best_fitness_monotonic_non_increasing(self):
         result = _make_de(sphere).run()
-        history = result.history_best_factor
+        history = result.history_best_fitness
         diffs = np.diff(history)
         assert np.all(diffs <= 1e-12)  # greedy selection => best never worsens
 
     def test_history_lengths_consistent(self):
         result = _make_de(sphere).run()
-        assert len(result.history_best_factor) == len(result.history_mean_factor)
-        assert len(result.history_best_factor) == len(result.history_factor)
-        assert len(result.history_best_factor) >= 2  # at least initial + 1 generation
+        lengths = {
+            len(result.history_best_fitness),
+            len(result.history_mean_fitness),
+            len(result.history_median_fitness),
+            len(result.history_worst_fitness),
+            len(result.history_std_fitness),
+            len(result.history_factor),
+            len(result.history_n_evals),
+        }
+        assert len(lengths) == 1  # all histories logged in lock-step
+        assert result.history_best_fitness.__len__() >= 2  # initial + >=1 generation
 
     def test_factor_history_constant_in_base(self):
         result = _make_de(sphere).run()
@@ -116,8 +124,8 @@ class TestComponents:
     def test_mutate_picks_three_distinct_others(self):
         de = _make_de(sphere, population_size=10, dim=3)
         pop = np.arange(30, dtype=float).reshape(10, 3)
-        # F=0 means mutant == pop[r1], so we can detect that r1 != idx
-        de.F = 0.0
+        # factor=0 means mutant == pop[r1], so we can detect that r1 != idx
+        de.factor = 0.0
         for idx in range(10):
             mutant = de._mutate(pop, idx, factor=0.0)
             assert not np.array_equal(mutant, pop[idx])
