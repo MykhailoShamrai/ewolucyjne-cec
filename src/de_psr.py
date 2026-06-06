@@ -18,6 +18,7 @@ class DEPSR(DEBase, SuccessRuleAdapter):
         crossover_probability: float = 0.9,
         max_evals: int = 100_000,
         seed: int | None = None,
+        target: float | None = None,
         factor_init: float = 0.5,
         factor_min: float = 0.1,
         factor_max: float = 1.0,
@@ -38,6 +39,7 @@ class DEPSR(DEBase, SuccessRuleAdapter):
             crossover_probability=crossover_probability,
             max_evals=max_evals,
             seed=seed,
+            target=target,
         )
         self._init_adapter(factor_init, factor_min, factor_max, c_sigma, d_sigma)
         self.z_star = z_star

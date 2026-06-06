@@ -21,7 +21,7 @@ class DEBase:
 
     def __init__(self, func: Callable, dim: int, bounds: tuple[float, float],
                  population_size: int = 100, factor: float = 0.5, crossover_probability: float = 0.9,
-                 max_evals: int = 100_000, seed: int | None = None):
+                 max_evals: int = 100_000, seed: int | None = None, target: float | None = None):
         self.func = func
         self.dim = dim
         self.lb, self.ub = bounds
@@ -29,6 +29,7 @@ class DEBase:
         self.factor = factor
         self.CR = crossover_probability
         self.max_evals = max_evals
+        self.target = target  # stop early once best fitness <= target (CEC: optimum + 1e-8)
         self.rng = np.random.default_rng(seed)
         self.seed = seed
 
@@ -52,6 +53,13 @@ class DEBase:
                 trial[j] = mutant[j]
         return trial
 
+    def _evaluate(self, X: np.ndarray) -> np.ndarray:
+        # Use the objective's batch interface (CEC2017Problem.evaluate) when available
+        batch = getattr(self.func, "evaluate", None)
+        if batch is not None:
+            return np.asarray(batch(X), dtype=float)
+        return np.array([self.func(x) for x in X], dtype=float)
+
     def get_factor(self) -> float:
         return self.factor
 
@@ -61,7 +69,7 @@ class DEBase:
 
     def run(self) -> DEResult:
         population = self._init_population()
-        fitness = np.array([self.func(v) for v in population])
+        fitness = self._evaluate(population)
         n_evals = self.population_size
 
         result = DEResult(best_x=np.empty(self.dim), best_fitness=float("inf"))
@@ -77,32 +85,29 @@ class DEBase:
 
         _log(self.get_factor())
 
+        target = self.target if self.target is not None else -np.inf
         generation = 0
-        while n_evals < self.max_evals:
+        while n_evals < self.max_evals and float(np.min(fitness)) > target:
             generation += 1
             current_factor = self.get_factor()
 
-            new_population = np.empty_like(population)
-            new_fitness = np.empty(self.population_size)
-            trial_fitness = fitness.copy()  # neutral default for the unevaluated tail
-
-            for i in range(self.population_size):
-                if n_evals >= self.max_evals:
-                    new_population[i] = population[i]
-                    new_fitness[i] = fitness[i]
-                    continue
+            # Build every trial first (RNG order identical to the scalar loop),
+            # then evaluate the whole batch in one call. A partial last generation
+            # only builds/evaluates the k trials the budget still allows.
+            k = min(self.population_size, self.max_evals - n_evals)
+            trials = population.copy()
+            for i in range(k):
                 mutant = self._clip(self._mutate(population, i, current_factor))
-                trial = self._clip(self._crossover(population[i], mutant))
-                f_trial = self.func(trial)
-                n_evals += 1
-                trial_fitness[i] = f_trial
+                trials[i] = self._clip(self._crossover(population[i], mutant))
 
-                if f_trial <= fitness[i]:
-                    new_population[i] = trial
-                    new_fitness[i] = f_trial
-                else:
-                    new_population[i] = population[i]
-                    new_fitness[i] = fitness[i]
+            trial_fitness = fitness.copy()  # neutral default for the unevaluated tail
+            trial_fitness[:k] = self._evaluate(trials[:k])
+            n_evals += k
+
+            take = trial_fitness <= fitness
+            take[k:] = False  # untouched tail never replaces its parent
+            new_population = np.where(take[:, None], trials, population)
+            new_fitness = np.where(take, trial_fitness, fitness)
 
             self.update_factor(generation, fitness, trial_fitness, new_fitness)
             population = new_population
