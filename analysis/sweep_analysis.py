@@ -3,7 +3,6 @@
 Run from the project root:
     python -m analysis.sweep_analysis results/sweep_30.csv
     python -m analysis.sweep_analysis results/sweep_30.csv results/sweep_10.csv --top 3
-    python -m analysis.sweep_analysis results/sweep_*.csv --param-col np --out-dir results/analysis
 """
 import argparse
 import os
@@ -68,28 +67,24 @@ def _fmt_block(title: str, body: str) -> str:
     return f"\n{line}\n{title}\n{line}\n{body}"
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Analyse sweep CSV(s); pick best hp")
-    ap.add_argument("csv", nargs="+", help="one or more sweep CSV files")
-    ap.add_argument("--param-col", default="hp_value",
-                    help="the swept parameter column (hp_value, or np for sweep #2)")
-    ap.add_argument("--top", type=int, default=3, help="top-N per function")
-    ap.add_argument("--out-dir", default="results/analysis")
-    args = ap.parse_args()
+def report(df, param_col, top, out_dir):
+    """Aggregate, rank, write the three CSVs and print the recommendation.
 
-    df = load(args.csv)
-    if args.param_col not in df.columns:
-        raise SystemExit(f"--param-col {args.param_col!r} not in CSV columns: "
+    Shared core used by both the generic CLI (any --param-col) and the dedicated
+    pop_size wrapper, so the analysis logic lives in exactly one place.
+    """
+    if param_col not in df.columns:
+        raise SystemExit(f"param column {param_col!r} not in CSV columns: "
                          f"{list(df.columns)}")
 
-    agg = per_seed_aggregate(df, args.param_col)
-    top_df = per_function_top(agg, args.param_col, args.top)
-    rec = recommended_param(agg, args.param_col)
+    agg = per_seed_aggregate(df, param_col)
+    top_df = per_function_top(agg, param_col, top)
+    rec = recommended_param(agg, param_col)
 
-    os.makedirs(args.out_dir, exist_ok=True)
-    agg.to_csv(os.path.join(args.out_dir, "per_param_stats.csv"), index=False)
-    top_df.to_csv(os.path.join(args.out_dir, "per_function_top.csv"), index=False)
-    rec.to_csv(os.path.join(args.out_dir, "recommended_param.csv"), index=False)
+    os.makedirs(out_dir, exist_ok=True)
+    agg.to_csv(os.path.join(out_dir, "per_param_stats.csv"), index=False)
+    top_df.to_csv(os.path.join(out_dir, "per_function_top.csv"), index=False)
+    rec.to_csv(os.path.join(out_dir, "recommended_param.csv"), index=False)
 
     pd.set_option("display.width", 200)
     pd.set_option("display.max_rows", 200)
@@ -98,13 +93,13 @@ def main():
     print(f"loaded {len(df)} runs | configs={sorted(df.config.unique())} | "
           f"dims={sorted(df.dim.unique())} | "
           f"funcs={df.func_id.nunique()} | seeds={df.seed.nunique()} | "
-          f"param={args.param_col}")
+          f"param={param_col}")
 
     # Recommended single value per (config, dim): the row with best_rank == 1.
     best = rec[rec["best_rank"] == 1.0].copy()
-    show = ["config", "dim", args.param_col, "mean_rank", "wins", "n_funcs",
+    show = ["config", "dim", param_col, "mean_rank", "wins", "n_funcs",
             "mean_solved_rate"]
-    print(_fmt_block("RECOMMENDED hyperparameter per (config, dim)  [mean-rank]",
+    print(_fmt_block("RECOMMENDED value per (config, dim)  [mean-rank]",
                      best[show].to_string(index=False)))
 
     # Runner-up context: top-3 values by mean rank per (config, dim).
@@ -112,10 +107,22 @@ def main():
     print(_fmt_block("Top-3 by mean rank (for context / tie-breaks)",
                      runners[show].to_string(index=False)))
 
-    print(_fmt_block(f"Per-function top-{args.top} written to",
-                     os.path.join(args.out_dir, "per_function_top.csv")))
-    print(f"\nwrote: {args.out_dir}/{{per_param_stats,per_function_top,"
+    print(_fmt_block(f"Per-function top-{top} written to",
+                     os.path.join(out_dir, "per_function_top.csv")))
+    print(f"\nwrote: {out_dir}/{{per_param_stats,per_function_top,"
           f"recommended_param}}.csv")
+    return rec
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Analyse sweep CSV(s); pick best hp")
+    ap.add_argument("csv", nargs="+", help="one or more sweep CSV files")
+    ap.add_argument("--param-col", default="hp_value",
+                    help="the swept parameter column (hp_value, or pop_size for the NP sweep)")
+    ap.add_argument("--top", type=int, default=3, help="top-N per function")
+    ap.add_argument("--out-dir", default="results/analysis")
+    args = ap.parse_args()
+    report(load(args.csv), args.param_col, args.top, args.out_dir)
 
 
 if __name__ == "__main__":
