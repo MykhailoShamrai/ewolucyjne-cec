@@ -111,8 +111,8 @@ def _stage_plan(jobs):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="NP confirmation sweep")
-    ap.add_argument("--out", default="results/sweep_np.csv")
+    ap = argparse.ArgumentParser(description="Population size sweep")
+    ap.add_argument("--out", default="results/sweep_pop.csv")
     ap.add_argument("--dims", type=int, nargs="+", default=[10, 30])
     ap.add_argument("--seeds", type=int, default=10, help="run seeds 1..N per (func, dim)")
     ap.add_argument("--workers", type=int, default=os.cpu_count())
