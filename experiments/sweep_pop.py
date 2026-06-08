@@ -8,27 +8,33 @@ from concurrent.futures import ProcessPoolExecutor
 from cecpy.benchmark import CECEdition, CECEvaluator
 
 from src.cec_problem import CEC2017Problem
+from src.de_base import DEBase
 from src.de_msr import DEMSR
 from src.de_psr import DEPSR
 from experiments.config import (
-    CR, FACTOR_INIT, FACTOR_MIN, FACTOR_MAX, FUNCTIONS, TOL,
-    QUANTILE_GRID, ZSTAR_GRID_TRIAL, ZSTAR_GRID_POPULATION, max_fes, pop_size,
+    CR, FACTOR_INIT, FACTOR_MIN, FACTOR_MAX, FUNCTIONS, TOL, max_fes,
 )
 
-Config = namedtuple("Config", "method mode hp_name grid")
+Config = namedtuple("Config", "method mode")
 
 CONFIGS = {
-    "MSR-trial": Config("MSR", "trial", "comparison_quantile", QUANTILE_GRID),
-    "MSR-population": Config("MSR", "population", "comparison_quantile", QUANTILE_GRID),
-    "PSR-trial": Config("PSR", "trial", "z_star", ZSTAR_GRID_TRIAL),
-    "PSR-population": Config("PSR", "population", "z_star", ZSTAR_GRID_POPULATION),
+    "base": Config("base", "-"),
+    "MSR-population": Config("MSR", "population"),
+    "PSR-population": Config("PSR", "population"),
 }
 
-FIELDS = ["config", "method", "mode", "hp_name", "hp_value", "func_id", "dim",
+BEST_QUANTILE = 0.45   # MSR-population
+BEST_ZSTAR = 0.10      # PSR-population
+
+NP_GRID = {
+    10: [25, 50, 100],
+    30: [50, 100, 150],
+}
+
+FIELDS = ["config", "method", "mode", "pop_size", "func_id", "dim",
           "seed", "best_fitness", "error", "n_evals", "solved", "seconds"]
 
 _EVALUATORS: dict[int, CECEvaluator] = {}
-
 
 def _problem(func_id: int, dim: int) -> CEC2017Problem:
     evaluator = _EVALUATORS.get(dim)
@@ -38,51 +44,52 @@ def _problem(func_id: int, dim: int) -> CEC2017Problem:
     return CEC2017Problem(func_id, dim, evaluator=evaluator)
 
 
-def _build(cfg, hp, problem, dim, seed):
+def _build(cfg, np_size, problem, dim, seed):
     common = dict(
         func=problem, dim=dim, bounds=problem.bounds,
-        population_size=pop_size(dim), crossover_probability=CR,
+        population_size=np_size, crossover_probability=CR,
         max_evals=max_fes(dim), seed=seed, target=problem.optimum + TOL,
+    )
+    if cfg.method == "base":
+        return DEBase(**common, factor=FACTOR_INIT)
+    common.update(
         factor_init=FACTOR_INIT, factor_min=FACTOR_MIN, factor_max=FACTOR_MAX,
         comparison_mode=cfg.mode,
     )
     if cfg.method == "MSR":
-        return DEMSR(**common, comparison_quantile=hp)
+        return DEMSR(**common, comparison_quantile=BEST_QUANTILE)
     else:
-        return DEPSR(**common, z_star=hp)
+        return DEPSR(**common, z_star=BEST_ZSTAR)
 
 
 def run_job(job):
-    config_name, hp, func_id, dim, seed = job
+    config_name, np_size, func_id, dim, seed = job
     cfg = CONFIGS[config_name]
     problem = _problem(func_id, dim)
     start = time.perf_counter()
-    result = _build(cfg, hp, problem, dim, seed).run()
+    result = _build(cfg, np_size, problem, dim, seed).run()
     error = result.best_fitness - problem.optimum
     return {
         "config": config_name, "method": cfg.method, "mode": cfg.mode,
-        "hp_name": cfg.hp_name, "hp_value": hp, "func_id": func_id, "dim": dim,
+        "pop_size": np_size, "func_id": func_id, "dim": dim,
         "seed": seed, "best_fitness": result.best_fitness, "error": error,
         "n_evals": result.n_evals, "solved": int(error <= TOL),
         "seconds": round(time.perf_counter() - start, 3),
     }
 
 
-def build_jobs(configs, dims, seeds, functions, grid_override=None):
+def build_jobs(configs, dims, seeds, functions, np_grid):
     jobs = []
     for config_name in configs:
-        cfg = CONFIGS[config_name]
-        grid = grid_override.get(cfg.hp_name, cfg.grid) if grid_override else cfg.grid
-        for hp in grid:
-            for func_id in functions:
-                for dim in dims:
+        for dim in dims:
+            for np_size in np_grid[dim]:
+                for func_id in functions:
                     for seed in seeds:
-                        jobs.append((config_name, hp, func_id, dim, seed))
+                        jobs.append((config_name, np_size, func_id, dim, seed))
     return jobs
 
 
 def _fmt(secs):
-    """Human-readable duration: '1h05m', '7m12s' or '9s'."""
     secs = int(secs)
     h, rem = divmod(secs, 3600)
     m, s = divmod(rem, 60)
@@ -104,10 +111,10 @@ def _stage_plan(jobs):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="MSR/PSR hyperparameter sweep")
-    ap.add_argument("--out", default="results/sweep_10.csv")
-    ap.add_argument("--dims", type=int, nargs="+", default=[10])
-    ap.add_argument("--seeds", type=int, default=15, help="run seeds 1..N per (func, dim)")
+    ap = argparse.ArgumentParser(description="NP confirmation sweep")
+    ap.add_argument("--out", default="results/sweep_np.csv")
+    ap.add_argument("--dims", type=int, nargs="+", default=[10, 30])
+    ap.add_argument("--seeds", type=int, default=10, help="run seeds 1..N per (func, dim)")
     ap.add_argument("--workers", type=int, default=os.cpu_count())
     ap.add_argument("--configs", nargs="+", default=list(CONFIGS))
     ap.add_argument("--quick", action="store_true", help="tiny smoke run")
@@ -117,19 +124,23 @@ def main():
 
     seeds = list(range(1, args.seeds + 1))
     functions = FUNCTIONS
-    grid_override = None
+    np_grid = NP_GRID
     if args.quick:
         functions = [1, 7, 21]
         seeds = [1, 2]
-        grid_override = {"comparison_quantile": [0.3, 0.5, 0.7],
-                         "z_star": [-0.2, 0.0, 0.3]}
+        np_grid = {10: [25, 100], 30: [100, 300]}
 
-    jobs = build_jobs(args.configs, args.dims, seeds, functions, grid_override)
+    missing = [d for d in args.dims if d not in np_grid]
+    if missing:
+        ap.error(f"no NP grid for dims {missing}; known dims: {sorted(np_grid)}")
+
+    jobs = build_jobs(args.configs, args.dims, seeds, functions, np_grid)
     total = len(jobs)
     stage_order, stage_total = _stage_plan(jobs)
 
     print(f"{total} runs | {len(stage_order)} stages | dims={args.dims} "
           f"seeds={seeds[0]}..{seeds[-1]} workers={args.workers}", flush=True)
+    print("NP grid: " + "  ".join(f"D{d}={np_grid[d]}" for d in args.dims), flush=True)
     print("stages: " + "  ".join(f"{s}({stage_total[s]})" for s in stage_order),
           flush=True)
 
@@ -144,6 +155,7 @@ def main():
         writer = csv.DictWriter(fh, fieldnames=FIELDS)
         writer.writeheader()
         log_every = max(1, args.log_every)
+        # pool.map preserves job order, so results arrive stage-by-stage.
         for job, row in zip(jobs, pool.map(run_job, jobs, chunksize=4)):
             writer.writerow(row)
             fh.flush()
@@ -161,13 +173,13 @@ def main():
                 flag = "OK " if row["solved"] else "    "
                 print(f"[{done}/{total} {100 * done / total:4.0f}%] {flag}"
                       f"{stage} f{row['func_id']:02d} D{row['dim']} s{row['seed']} "
-                      f"{row['hp_name']}={row['hp_value']:+.2f} | "
+                      f"NP={row['pop_size']:<3} | "
                       f"err={row['error']:.2e} {row['seconds']:.1f}s | "
                       f"{_fmt(elapsed)} elapsed, ETA {_fmt(eta)}", flush=True)
 
             if stage_complete:
                 now = time.perf_counter()
-                wall = now - prev_stage_end          # time since the previous stage finished
+                wall = now - prev_stage_end
                 prev_stage_end = now
                 finished = sum(1 for s in stage_order
                                if stage_done[s] == stage_total[s])
