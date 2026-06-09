@@ -82,7 +82,6 @@ def build_jobs(configs, dims, seeds, functions, grid_override=None):
 
 
 def _fmt(secs):
-    """Human-readable duration: '1h05m', '7m12s' or '9s'."""
     secs = int(secs)
     h, rem = divmod(secs, 3600)
     m, s = divmod(rem, 60)

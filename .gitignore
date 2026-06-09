@@ -17,9 +17,9 @@ env/
 results/*.json
 results/*.csv
 
-# Figures (regenerowalne)
-figures/*.png
-figures/*.pdf
+*.png
+*.pdf
+*.csv
 
 # OS
 .DS_Store
