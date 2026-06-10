@@ -91,9 +91,6 @@ class DEBase:
             generation += 1
             current_factor = self.get_factor()
 
-            # Build every trial first (RNG order identical to the scalar loop),
-            # then evaluate the whole batch in one call. A partial last generation
-            # only builds/evaluates the k trials the budget still allows.
             k = min(self.population_size, self.max_evals - n_evals)
             trials = population.copy()
             for i in range(k):
@@ -105,7 +102,7 @@ class DEBase:
             n_evals += k
 
             take = trial_fitness <= fitness
-            take[k:] = False  # untouched tail never replaces its parent
+            take[k:] = False
             new_population = np.where(take[:, None], trials, population)
             new_fitness = np.where(take, trial_fitness, fitness)
 
